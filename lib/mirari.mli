@@ -21,6 +21,7 @@
 type mode = [
   |`unix of [`direct | `socket ]
   |`xen
+  |`kfreebsd
 ]
 
 (** [configure ~mode ~no_install conf_file] configure a project. If

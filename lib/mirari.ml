@@ -20,7 +20,13 @@ open Util
 type mode = [
   |`unix of [`direct | `socket ]
   |`xen
+  |`kfreebsd
 ]
+
+let make =
+  match (Unix.system "type gmake > /dev/null 2> /dev/null") with
+   | Unix.WEXITED 0 -> "gmake"
+   | _ -> "make"
 
 let generated_by_mirari =
   let t = Unix.gettimeofday () in
@@ -308,7 +314,7 @@ module Build = struct
       | ds -> "-pkgs " ^ String.concat "," ds in
     let ext = match mode with
       | `unix _ -> "native"
-      | `xen    -> "native.o" in
+      | `xen | `kfreebsd -> "native.o" in
     let oc = open_out file in
     append oc "# %s" generated_by_mirari;
     newline oc;
@@ -323,7 +329,7 @@ module Build = struct
     append oc "\tocamlbuild -classic-display -use-ocamlfind -lflag -linkpkg %s %s -tags \"syntax(camlp4o)\" main.%s"
       (match mode with
        |`unix _ -> ""
-       |`xen -> "-lflag -dontlink -lflag unix")
+       |`xen | `kfreebsd -> "-lflag -dontlink -lflag unix")
       depends ext;
     newline oc;
     append oc "build: main.native";
@@ -343,11 +349,12 @@ module Build = struct
     let os =
       match mode with
       | `unix _ -> "mirage-unix"
-      | `xen -> "mirage-xen"
+      | `xen -> "mirage-xen" 
+      | `kfreebsd -> "mirage-kfreebsd"
     in
     let net =
       match mode with
-      | `xen | `unix `direct -> "mirage-net-direct"
+      | `kfreebsd | `xen | `unix `direct -> "mirage-net-direct"
       | `unix `socket -> "mirage-net-socket"
     in
     let ps = os :: net :: t.packages in
@@ -458,15 +465,28 @@ let call_xen_scripts t =
   end else
     error "xen object file %s not found, cannot continue" obj
 
+let call_kfreebsd_scripts t =
+  let obj    = "_build/main.native.o" in
+  let target = "_build/main.ko"  in
+  if Sys.file_exists obj then begin
+    let path = read_command "ocamlfind printconf path" in
+    let lib = strip path ^ "/mirage-kfreebsd" in
+    command "ld -nostdlib -r -d -o %s %s %s/libmir.a" target obj lib;
+    command "objcopy --strip-debug %s" target;
+    command "ln -nfs %s mir-%s.ko" target t.name
+  end else
+    error "kFreeBSD object file %s not found, cannot continue" obj
+
 let call_build_scripts ~mode t =
   let makefile = Printf.sprintf "%s/Makefile" t.dir in
   if Sys.file_exists makefile then (
-    in_dir t.dir (fun () -> command "make build");
+    in_dir t.dir (fun () -> command "%s build" make);
     (* gen_xen.sh *)
     match mode with
     |`xen -> call_xen_scripts t
     |`unix _ ->
       command "ln -nfs _build/main.native mir-%s" t.name
+    |`kfreebsd -> call_kfreebsd_scripts t
   ) else
     error "You should run 'mirari configure %s' first." t.file
 
@@ -545,11 +565,36 @@ let run ~mode file =
   |`xen -> (* xen backend *)
     info "+ xen mode";
     Unix.execvp "xl" [|"xl"; "create"; "-c"; t.name ^ ".xl"|]
+  |`kfreebsd -> (* kfreebsd backend *)
+    info "+ FreeBSD kernel module mode";
+    let kmod = ("mir-" ^ t.name ^ ".ko") in
+    let cpid = Unix.fork () in
+    if cpid = 0 then
+      begin
+        command "/sbin/kldload ./%s" kmod;
+        info "Kernel module loaded, sleeping.  (Hit Ctrl+C to stop.)";
+        let rec loop () = Unix.sleep 5; loop ()
+        in loop ()
+      end
+    else
+      begin
+        try
+          (* Waiting for the user to terminate the process, 
+           * keep the module running in the meantime.
+           *)
+          let _,_ = Unix.waitpid [] cpid in ()
+        with
+          | Sys.Break ->
+              info "Ctrl-C received, unloading the kernel module and exiting.%!";
+              command "/sbin/kldunload %s" kmod;
+              info "Kernel module unloaded.%!";
+          | exn -> raise exn
+      end
 
 let clean file =
   let file = scan_conf file in
   let t = create `xen file in
   in_dir t.dir (fun () ->
-      command "make clean";
+      command "%s clean" make;
       command "rm -f main.ml myocamlbuild.ml Makefile mir-* backend.ml filesystem_*.ml *.xl *.map"
     )

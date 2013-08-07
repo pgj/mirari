@@ -40,17 +40,18 @@ let arg_list name doc conv =
   Arg.(value & pos_all conv [] & doc)
 
 let no_install = mk_flag ["no-install"] "Do not auto-install OPAM packages."
-let xen = mk_flag ["xen"] "Generate a Xen microkernel. Do not use in conjunction with --unix-*."
-let unix = mk_flag ["unix"] "Use unix-direct backend. Do not use in conjunction with --xen."
-let socket = mk_flag ["socket"] "Use networking socket backend. Do not use in conjunction with --xen."
+let xen = mk_flag ["xen"] "Generate a Xen microkernel. Do not use in conjunction with --unix-* or --kfreebsd."
+let unix = mk_flag ["unix"] "Use unix-direct backend. Do not use in conjunction with --xen or --kfreebsd."
+let socket = mk_flag ["socket"] "Use networking socket backend. Do not use in conjunction with --xen or --kfreebsd."
+let kfreebsd = mk_flag ["kfreebsd"] "Generate a FreeBSD kernel module. Do not use in conjunction with --unix-* or --xen."
 (* Select the operating mode from command line flags *)
-let mode unix xen socket =
-  match xen,unix,socket with
-  |true,true,_ -> failwith "Cannot specify --unix and --xen together."
-  |true,_,true -> failwith "Cannot specify --xen and --socket together."
-  |true,false,false -> `xen
-  |false,_,true -> `unix `socket
-  |false,_,false -> `unix `direct
+let mode unix xen socket kfreebsd =
+  match xen,unix,socket,kfreebsd with
+  |true,false,false,false -> `xen
+  |false,_,true,false     -> `unix `socket
+  |false,_,false,false    -> `unix `direct
+  |false,false,false,true -> `kfreebsd
+  |_ -> failwith "Invalid combination of parameters."
 
 let file =
   let doc = Arg.info ~docv:"FILE"
@@ -65,11 +66,11 @@ let configure =
     `S "DESCRIPTION";
     `P "The $(b,configure) command initializes a fresh Mirage application."
   ] in
-  let configure unix xen socket no_install file =
-    if unix && xen then `Help (`Pager, Some "configure")
+  let configure unix xen socket kfreebsd no_install file =
+    if unix && (xen || kfreebsd) then `Help (`Pager, Some "configure")
     else
-      `Ok (Mirari.configure ~mode:(mode unix xen socket) ~no_install file) in
-  Term.(ret (pure configure $ unix $ xen $ socket $ no_install $ file)), term_info "configure" ~doc ~man
+      `Ok (Mirari.configure ~mode:(mode unix xen socket kfreebsd) ~no_install file) in
+  Term.(ret (pure configure $ unix $ xen $ socket $ kfreebsd $ no_install $ file)), term_info "configure" ~doc ~man
 
 (* BUILD *)
 let build_doc = "Build a Mirage application."
@@ -79,11 +80,11 @@ let build =
     `S "DESCRIPTION";
     `P "Build an already configured application."
   ] in
-  let build unix xen socket file =
-    if unix && xen then `Help (`Pager, Some "build")
+  let build unix xen socket kfreebsd file =
+    if unix && (xen || kfreebsd) then `Help (`Pager, Some "build")
     else
-      `Ok (Mirari.build ~mode:(mode unix xen socket) file) in
-  Term.(ret (pure build $ unix $ xen $ socket $ file)), term_info "build" ~doc ~man
+      `Ok (Mirari.build ~mode:(mode unix xen socket kfreebsd) file) in
+  Term.(ret (pure build $ unix $ xen $ socket $ kfreebsd $ file)), term_info "build" ~doc ~man
 
 (* RUN *)
 let run_doc = "Run a Mirage application."
@@ -92,11 +93,11 @@ let run =
   let man = [
     `S "DESCRIPTION";
     `P "Run a Mirage application on the selected backend."] in
-  let run unix xen socket file =
+  let run unix xen socket kfreebsd file =
     if unix && xen then `Help (`Pager, Some "run")
     else
-      `Ok (Mirari.run ~mode:(mode unix xen socket) file) in
-  Term.(ret (pure run $ unix $ xen $ socket $ file)), term_info "run" ~doc ~man
+      `Ok (Mirari.run ~mode:(mode unix xen socket kfreebsd) file) in
+  Term.(ret (pure run $ unix $ xen $ socket $ kfreebsd $ file)), term_info "run" ~doc ~man
 
 (* CLEAN *)
 let clean_doc = "Clean auto-generated files."
