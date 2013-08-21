@@ -326,11 +326,14 @@ module Build = struct
     append oc "\t@touch $@";
     newline oc;
     append oc "main.native: _build/.stamp";
-    append oc "\tocamlbuild -classic-display -use-ocamlfind -lflag -linkpkg %s %s -tags \"syntax(camlp4o)\" main.%s"
+    append oc "\tocamlbuild -classic-display -use-ocamlfind -lflag -linkpkg %s %s -tags \"syntax(camlp4o)\" main.%s%s"
       (match mode with
        |`unix _ -> ""
        |`xen | `kfreebsd -> "-lflag -dontlink -lflag unix")
-      depends ext;
+      depends ext
+      (match mode with
+       |`unix _ | `xen -> ""
+       |`kfreebsd -> " module.o");
     newline oc;
     append oc "build: main.native";
     append oc "\t@ :";
@@ -411,6 +414,30 @@ module XL = struct
       (fun () -> close_out oc);
 end
 
+module KLD = struct
+  let output dir name =
+    let mfile = Printf.sprintf "%s/module.c" dir in
+    info "+ creating %s" mfile;
+    let mc = open_out mfile in
+    append mc "#define _KERNEL 1
+#define KLD_MODULE 1
+
+#include <sys/param.h>
+#include <sys/kernel.h>
+#include <sys/module.h>
+
+extern int event_handler(module_t m, int w, void *p);
+
+static moduledata_t conf = {
+	\"mir-%s\"
+,	event_handler
+,	NULL
+};
+
+DECLARE_MODULE(mir_%s, conf, SI_SUB_KLD, SI_ORDER_ANY);
+" name name
+end
+
 (* A type describing all the configuration of a mirage unikernel *)
 type t = {
   file     : string;           (* Path of the mirari config file *)
@@ -468,10 +495,11 @@ let call_xen_scripts t =
 let call_kfreebsd_scripts t =
   let obj    = "_build/main.native.o" in
   let target = "_build/main.ko"  in
+  let glue = "_build/module.o" in
   if Sys.file_exists obj then begin
     let path = read_command "ocamlfind printconf path" in
     let lib = strip path ^ "/mirage-kfreebsd" in
-    command "ld -nostdlib -r -d -o %s %s %s/libmir.a" target obj lib;
+    command "ld -nostdlib -r -d -o %s %s %s %s/libmir.a" target obj glue lib;
     command "objcopy --strip-debug %s" target;
     command "ln -nfs %s mir-%s.ko" target t.name
   end else
@@ -502,6 +530,8 @@ let configure ~mode ~no_install file =
   Backend.output ~mode t.dir;
   (* Generate the XL config file if backend = Xen *)
   if mode = `xen then XL.output t.name t.kvs;
+  (* Generate the KLD glue file if backend = kFreeBSD *)
+  if mode = `kfreebsd then KLD.output t.dir t.name;
   (* install OPAM dependencies *)
   if not no_install then Build.prepare ~mode t.build;
   (* crunch *)
@@ -596,5 +626,5 @@ let clean file =
   let t = create `xen file in
   in_dir t.dir (fun () ->
       command "%s clean" make;
-      command "rm -f main.ml myocamlbuild.ml Makefile mir-* backend.ml filesystem_*.ml *.xl *.map"
+      command "rm -f main.ml myocamlbuild.ml Makefile mir-* backend.ml module.c filesystem_*.ml *.xl *.map"
     )
